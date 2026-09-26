@@ -1,0 +1,79 @@
+name: Verify list_indices fix
+
+on:
+  push:
+    branches:
+      - verify/list-indices-missing-fts-files
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      RUST_BACKTRACE: "1"
+      TEST_NAME: table::create_index::tests::test_list_indices_with_missing_fts_index_files
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - uses: rui314/setup-mold@v1
+      - name: Make swap
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 16G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+      - name: Install toolchain
+        run: |
+          rustup show
+          rustup component add rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: With the fix, the new test and the other create_index tests pass
+        run: cargo test -p lancedb --locked --features remote --lib table::create_index::tests
+      - name: Without the fix, the new test fails
+        run: |
+          git checkout HEAD~2 -- rust/lancedb/src/table.rs
+          git diff --stat HEAD -- rust/lancedb/src/table.rs
+          set +e
+          cargo test -p lancedb --locked --features remote --lib "$TEST_NAME" -- --exact 2>&1 | tee without-fix.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::The new test passed without the fix, so it does not reproduce #4250."
+            exit 1
+          fi
+          grep -q "test $TEST_NAME ... FAILED" without-fix.log || {
+            echo "::error::cargo failed, but not in the new test (build error?)."
+            exit 1
+          }
+          echo "The new test fails without the fix, as expected."
+      - name: Disk usage
+        if: always()
+        run: |
+          df -h /
+          du -sh target || true
