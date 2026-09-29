@@ -76,8 +76,10 @@ jobs:
       - name: Regenerate docs
         run: |
           pnpm run docs
-          git diff --stat -- ../ ':(exclude)Cargo.lock'
-          git diff -- ../ ':(exclude)Cargo.lock' > ../docs.patch
+          git add -A -- ../docs/src/js
+          git status --porcelain -- ../ ':(exclude)Cargo.lock'
+          git diff --cached --stat -- ../docs/src/js
+          git diff --cached -- ../docs/src/js > ../docs.patch
       - uses: actions/upload-artifact@v4
         with:
           name: docs-patch
