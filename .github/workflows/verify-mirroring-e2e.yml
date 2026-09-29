@@ -1,0 +1,79 @@
+name: Verify mirroring e2e test
+
+on:
+  push:
+    branches:
+      - verify/reenable-mirroring-e2e
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      RUST_BACKTRACE: "1"
+      TEST_NAME: io::object_store::test::test_e2e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - uses: rui314/setup-mold@v1
+      - name: Make swap
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 16G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+      - name: Install toolchain
+        run: |
+          rustup show
+          rustup component add rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: With the fix, test_e2e and the other object_store tests pass
+        run: cargo test -p lancedb --locked --features remote --lib io::object_store::test
+      - name: Without the fix (file:// primary), test_e2e fails
+        run: |
+          git checkout HEAD~2 -- rust/lancedb/src/io/object_store.rs
+          git diff --stat HEAD -- rust/lancedb/src/io/object_store.rs
+          set +e
+          cargo test -p lancedb --locked --features remote --lib "$TEST_NAME" -- --exact --include-ignored 2>&1 | tee without-fix.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::test_e2e passed with a file:// primary, so the LocalWriter bypass is not what broke it."
+            exit 1
+          fi
+          grep -q "test $TEST_NAME ... FAILED" without-fix.log || {
+            echo "::error::cargo failed, but not in test_e2e (build error?)."
+            exit 1
+          }
+          echo "test_e2e fails with a file:// primary, as expected."
+      - name: Disk usage
+        if: always()
+        run: |
+          df -h /
+          du -sh target || true
